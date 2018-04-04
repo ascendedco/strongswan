@@ -335,6 +335,19 @@ METHOD(proposal_t, strip_dh, void,
 }
 
 /**
+ * Older releases incorrectly sent a key length attribute for the fixed-length
+ * ENCR_CHACHA20_POLY1305, accept such proposals.
+ */
+static bool is_old_chacha20(uint16_t alg, uint16_t ks1, uint16_t ks2)
+{
+	if (alg != ENCR_CHACHA20_POLY1305)
+	{
+		return FALSE;
+	}
+	return (!ks1 && ks2 == 256) || (ks1 == 256 && !ks2);
+}
+
+/**
  * Select a matching proposal from this and other, insert into selected.
  */
 static bool select_algo(private_proposal_t *this, proposal_t *other,
@@ -394,19 +407,33 @@ static bool select_algo(private_proposal_t *this, proposal_t *other,
 		e2 = other->create_enumerator(other, type);
 		while (e2->enumerate(e2, &alg2, &ks2))
 		{
-			if (alg1 == alg2 && ks1 == ks2)
+			if (alg1 != alg2)
 			{
-				if (!priv && alg1 >= 1024)
+				continue;
+			}
+			if (ks1 != ks2)
+			{
+				/* special handling for older versions that sent a key length
+				 * attribute with ENCR_CHACHA20_POLY1305 */
+				if (is_old_chacha20(alg1, ks1, ks2))
+				{	/* send back a key length for such peers */
+					ks1 = 256;
+				}
+				else
 				{
-					/* accept private use algorithms only if requested */
-					DBG1(DBG_CFG, "an algorithm from private space would match, "
-						 "but peer implementation is unknown, skipped");
 					continue;
 				}
-				selected->add_algorithm(selected, type, alg1, ks1);
-				found = TRUE;
-				break;
 			}
+			if (!priv && alg1 >= 1024)
+			{
+				/* accept private use algorithms only if requested */
+				DBG1(DBG_CFG, "an algorithm from private space would match, "
+					 "but peer implementation is unknown, skipped");
+				continue;
+			}
+			selected->add_algorithm(selected, type, alg1, ks1);
+			found = TRUE;
+			break;
 		}
 	}
 	/* no match in all comparisons */
@@ -956,7 +983,7 @@ static bool proposal_add_supported_ike(private_proposal_t *this, bool aead)
 					add_algorithm(this, ENCRYPTION_ALGORITHM, encryption, 256);
 					break;
 				case ENCR_CHACHA20_POLY1305:
-					add_algorithm(this, ENCRYPTION_ALGORITHM, encryption, 256);
+					add_algorithm(this, ENCRYPTION_ALGORITHM, encryption, 0);
 					break;
 				default:
 					break;
